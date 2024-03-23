@@ -45,24 +45,26 @@ public:
          potok.join();
     }
     size_t add_task(std::packaged_task<T()> task){
-                // добавляем задачу в словарь
-                std::lock_guard<std::mutex> lock(mtx);
-                tasks.insert({task_idx,std::move(task)});
-                
+                // добавляем задачу в очередь
+                std::unique_lock<std::mutex> lock(mtx);
+                std::future<T> result = task.get_future();
+                task_idx++;
+                size_t idx = task_idx ;
+                results[idx] = result.share();
+                tasks.push(std::move(task));
+                idxs.push(idx);
+
                 //std::cout<<"help";
-                return task_idx++;
+                return idx;
     }
     T request_result(size_t idx){
         // берем задачу из словаря решаем её и кидаем резы в results
-        
-        std::lock_guard<std::mutex> lock(mtx);
-        auto it = results.find(idx);
-        if (it!= results.end()){
-            return it->second;
-        }
-        else{
-            return -1000;
-        }
+        std::shared_future<T> future;
+        {
+        std::unique_lock<std::mutex> lock(mtx);
+        future = results.find(idx)->second;
+        } 
+        return future.get();
 
     }
 
@@ -70,22 +72,29 @@ private:
     void work()
     {
         // пока не получили сигнал стоп
+        size_t idx;
+        std::packaged_task<T()> task;
         while (working)
         {
             // если очередь не пуста, то достаем задачу и решаем
+            std::unique_lock<std::mutex> lock(mtx);
             if(!tasks.empty())
             {
 
                 //std::cout<<"что то есть";
-                auto it = tasks.begin();
-                size_t idx = it->first;
-                std::packaged_task<T()> task = std::move(it->second);
-                tasks.erase(it);
-                std::future<double> preres = task.get_future();
-                task();
-                T res = preres.get();
-                results.insert(std::make_pair(idx,res));
+                idx = idxs.front();
                 
+                task = std::move(tasks.front());
+                tasks.pop();
+                idxs.pop();
+                lock.unlock();
+                task();
+            }
+            else{
+                lock.unlock();
+                if (!working){
+                    break;
+                }
             }
         }
         std::cout << "Server stop!\n";
@@ -96,13 +105,11 @@ private:
     bool working = 0;
     // Очередь задач
     size_t task_idx = 0;
-    std::unordered_map<size_t,std::packaged_task<T()>> tasks;
-    std::unordered_map<size_t,T> results;
+    std::queue<size_t> idxs;
+    std::queue<std::packaged_task<T()>> tasks;
+    std::unordered_map<size_t,std::shared_future<T>> results;
 };
 
-// Пример потока добавляющего задачи
-// Обратите внимание на метод emplace(), для конструирования на месте
-std::mutex client_mutex;
 void client(Server<double>& server,int N,int func_type,const std::string& filename)
 {
     // для рандомной генерации аргументов
@@ -129,45 +136,34 @@ void client(Server<double>& server,int N,int func_type,const std::string& filena
             int arg2 = dist(gen);
             std::packaged_task<double()> task(std::bind(f_pow<int>,arg1,arg2));
 
-            client_mutex.lock();
             size_t idx = server.add_task(std::move(task));
-            client_mutex.unlock();
-
-            while (server.request_result(idx)==-1000){
-                //если результат не обработан сервером то спим на 50 мс
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-
-            file << "pow "<<arg1<<" "<<arg2<<" = "<< std::fixed <<server.request_result(idx)<<std::endl;
-            continue;     
+            double ans = server.request_result(idx);
+            //std::cout << "работает клиент пов\n";
+            //std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            file << "pow "<<arg1<<" "<<arg2<<" = "<< std::fixed <<ans<<std::endl;
+                 
         }
         if (func_type==1)
         {
             int arg1 = dist_real(gen);
             std::packaged_task<double()> task(std::bind(f_sin<double>,arg1));
-            client_mutex.lock();
             size_t idx = server.add_task(std::move(task));
-            client_mutex.unlock();
-            while (server.request_result(idx)==-1000){
-                //если результат не обработан сервером то спим на 50 мс
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-            file << "sin "<<arg1<<" = "<< std::fixed << server.request_result(idx)<<std::endl;
-            continue;   
+            double res = server.request_result(idx);
+           // std::cout << "работает клиент синус\n";
+            //std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            file << "sin "<<arg1<<" = "<< std::fixed << res<<std::endl;
+              
         }
         if (func_type==2)
         {
             int arg1 = dist_real(gen);
             std::packaged_task<double()> task(std::bind(f_sqrt<double>,arg1));
-            client_mutex.lock();
             size_t idx = server.add_task(std::move(task));
-            client_mutex.unlock();
-            while (server.request_result(idx)==-1000){
-                //если результат не обработан сервером то спим на 50 мс
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-            file << "sqrt "<<arg1<<" = "<<  std::fixed << server.request_result(idx)<<std::endl;
-            continue;   
+            double res = server.request_result(idx);
+          //  std::cout<< " работает клиент sqrt\n";
+            //std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            file << "sqrt "<<arg1<<" = "<<  std::fixed << res <<std::endl;
+             
         }
     }
     file.close();
@@ -183,9 +179,9 @@ int main()
     std::cout << "Start\n";
     Server<double> servak;
     servak.start();
-    std::thread client_pow(client,std::ref(servak),10,0,"pow.txt");
-    std::thread client_sin(client,std::ref(servak),10,1,"sin.txt");
-    std::thread client_sqrt(client,std::ref(servak),10,2,"sqrt.txt");
+    std::thread client_pow(client,std::ref(servak),10000,0,"pow.txt");
+    std::thread client_sin(client,std::ref(servak),10000,1,"sin.txt");
+    std::thread client_sqrt(client,std::ref(servak),10000,2,"sqrt.txt");
 
     client_pow.join();
     client_sin.join();
