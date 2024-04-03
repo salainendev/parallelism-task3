@@ -34,9 +34,14 @@
             }
             all++;
         }
-        if (tokens[0]=="sin"){
-            if (std::abs(std::sin(stod(tokens[1]))==stod(tokens[3]))<1e-5){
-                accepted++;
+        //if (tokens[0]=="sin"){
+            //if (std::abs(std::sin(stod(tokens[1]))==stod(tokens[3]))<1e-5){
+                //accepted++;
+           // }
+        // почему была неправильная точность
+          if (tokens[0]=="sin"){
+              if (std::abs(std::sin(stod(tokens[1]))-stod(tokens[3]))<1e-5){
+                 accepted++;
             }
            // std::cout<<stod(tokens[3])<<' '<< std::sin(stod(tokens[1])) << std::endl;
             all++;
